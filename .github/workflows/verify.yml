@@ -1,0 +1,57 @@
+name: Verify prototype
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18.1-bookworm
+        env:
+          POSTGRES_USER: nixu_test
+          POSTGRES_PASSWORD: ci-test-only
+          POSTGRES_DB: nixu_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U nixu_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: '25', cache: maven}
+      - uses: actions/setup-node@v4
+        with: {node-version: '24', cache: npm, cache-dependency-path: apps/web/package-lock.json}
+      - run: sudo apt-get update && sudo apt-get install -y fonts-dejavu-core
+      - run: mvn -B -ntp -f backend/pom.xml verify
+        env:
+          TEST_DB_URL: jdbc:postgresql://localhost:5432/nixu_test
+          TEST_DB_USER: nixu_test
+          TEST_DB_PASSWORD: ci-test-only
+      - run: npm ci && npm run build && npm audit --audit-level=high
+        working-directory: apps/web
+      - run: npx playwright install --with-deps chromium
+        working-directory: apps/web
+      - name: Browser smoke
+        run: |
+          export DEMO_PASSWORD=nixu-local-test-2026
+          (cd backend && java -jar target/nixu-0.1.0.jar --spring.profiles.active=demo --server.address=127.0.0.1 > demo.log 2>&1) &
+          (cd apps/web && npm run dev > vite.log 2>&1) &
+          for i in $(seq 1 60); do curl --fail -s http://127.0.0.1:8080/actuator/health && break; sleep 2; done
+          mkdir -p docs/screenshots
+          cd apps/web && node browser-smoke.mjs
+      - name: YAML / template validation
+        run: |
+          pip install pyyaml jinja2
+          python3 scripts/validate_infra.py
+          docker compose --env-file dist/infra-check/secrets.env -f infra/compose/compose.yml config --quiet
+          pip install "ansible-core>=2.21,<2.22"
+          ansible-galaxy collection install -r infra/ansible/requirements.yml
+          cd infra/ansible && ansible-playbook site.yml -i inventory.example.ini --syntax-check -e @secrets.example.yml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verification
+          path: |
+            backend/target/surefire-reports
+            docs/screenshots

@@ -1,0 +1,10 @@
+# Dedicated Ubuntu 24.04/26.04 amd64 VPS.
+nixu_domain: wax.su
+nixu_acme_email: admin@example.com
+nixu_ssh_port: 22
+nixu_admin_cidrs:
+  - 203.0.113.20/32
+nixu_root: /opt/nixu
+nixu_source_archive: "{{ playbook_dir }}/../../dist/wax-source.tar.gz"
+nixu_backup_path: /var/backups/nixu
+nixu_restic_repository: ""

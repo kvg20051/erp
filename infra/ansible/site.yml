@@ -1,0 +1,248 @@
+---
+- name: Deploy wax prototype to a dedicated VPS
+  hosts: nixu
+  become: true
+  serial: 1
+  vars:
+    secret_names:
+      - nixu_postgres_password
+      - nixu_owner_password
+      - nixu_app_password
+      - nixu_keycloak_db_password
+      - nixu_keycloak_bootstrap_password
+      - nixu_admin_initial_password
+  pre_tasks:
+    - name: Validate supported host and required configuration
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == 'Ubuntu'
+          - ansible_distribution_version in ['24.04','26.04']
+          - ansible_architecture == 'x86_64'
+          - nixu_domain is match('^[a-z0-9][a-z0-9.-]+[a-z]$')
+          - nixu_domain != 'erp.example.com'
+          - nixu_admin_cidrs | length > 0
+          - "'203.0.113.20/32' not in nixu_admin_cidrs"
+          - nixu_acme_email != 'admin@example.com'
+        fail_msg: Edit group_vars/nixu.yml, DNS and inventory first; use a dedicated VPS.
+    - name: Read current SSH peer before applying firewall
+      ansible.builtin.command: printenv SSH_CONNECTION
+      become: false
+      changed_when: false
+      register: ssh_connection
+    - name: Refuse firewall setup that would block this SSH source
+      ansible.builtin.command:
+        argv: "{{ ['python3', '-c', 'import ipaddress,sys; peer=ipaddress.ip_address(sys.argv[1]); sys.exit(0 if any(peer in ipaddress.ip_network(c) for c in sys.argv[2:]) else 1)', ssh_connection.stdout.split()[0]] + nixu_admin_cidrs }}"
+      changed_when: false
+    - name: Require generated secrets, never example defaults
+      ansible.builtin.assert:
+        that:
+          - vars[item] is defined
+          - vars[item] is match('^[a-f0-9]{64}$')
+      loop: "{{ secret_names }}"
+      no_log: true
+    - name: Inspect the prepared source archive on the controller
+      ansible.builtin.stat:
+        path: "{{ nixu_source_archive }}"
+        checksum_algorithm: sha256
+      delegate_to: localhost
+      become: false
+      register: archive
+    - name: Require source bundle
+      ansible.builtin.assert:
+        that: archive.stat.exists
+        fail_msg: Run python3 scripts/package_source.py before deployment.
+    - name: Choose immutable release directory
+      ansible.builtin.set_fact:
+        nixu_release: "{{ archive.stat.checksum[:16] }}"
+        release_path: "{{ nixu_root }}/releases/{{ archive.stat.checksum[:16] }}"
+  tasks:
+    - name: Install OS prerequisites
+      ansible.builtin.apt:
+        name: [ca-certificates, curl, gnupg, python3, python3-debian, ufw, certbot, restic]
+        state: present
+        update_cache: true
+    - name: Docker key directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+    - name: Download Docker signing key
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: '0644'
+    - name: Configure official Docker repository
+      ansible.builtin.deb822_repository:
+        name: docker
+        types: [deb]
+        uris: https://download.docker.com/linux/ubuntu
+        suites: ["{{ ansible_distribution_release }}"]
+        components: [stable]
+        architectures: [amd64]
+        signed_by: /etc/apt/keyrings/docker.asc
+    - name: Install Docker and Compose
+      ansible.builtin.apt:
+        name: [docker-ce, docker-ce-cli, containerd.io, docker-buildx-plugin, docker-compose-plugin]
+        state: present
+        update_cache: true
+    - name: Start Docker
+      ansible.builtin.systemd_service:
+        name: docker
+        state: started
+        enabled: true
+    - name: Ensure trusted SSH remains reachable
+      community.general.ufw:
+        rule: allow
+        port: "{{ nixu_ssh_port }}"
+        proto: tcp
+        from_ip: "{{ item }}"
+      loop: "{{ nixu_admin_cidrs }}"
+    - name: Open HTTPS and ACME validation
+      community.general.ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop: ['80','443']
+    - name: Default incoming deny
+      community.general.ufw:
+        direction: incoming
+        default: deny
+    - name: Enable firewall after allowing SSH
+      community.general.ufw:
+        state: enabled
+    - name: Prepare private directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+      loop: ["{{ nixu_root }}", "{{ nixu_root }}/releases", "{{ release_path }}", "{{ release_path }}/source", "{{ nixu_backup_path }}"]
+    - name: Check previous deployment
+      ansible.builtin.stat:
+        path: "{{ nixu_root }}/current"
+      register: previous
+    - name: Snapshot before upgrading an existing deployment
+      ansible.builtin.command: "{{ nixu_root }}/backup.sh"
+      when: previous.stat.exists and previous.stat.lnk_source != release_path
+      changed_when: true
+    - name: Unpack reviewed source
+      ansible.builtin.unarchive:
+        src: "{{ nixu_source_archive }}"
+        dest: "{{ release_path }}/source"
+    - name: Copy Compose definition
+      ansible.builtin.copy:
+        src: ../compose/compose.yml
+        dest: "{{ release_path }}/compose.yml"
+        mode: '0600'
+    - name: Write private runtime files
+      ansible.builtin.template:
+        src: "{{ item.src }}"
+        dest: "{{ release_path }}/{{ item.dest }}"
+        mode: "{{ item.mode }}"
+      no_log: true
+      loop:
+        - {src: secrets.env.j2, dest: secrets.env, mode: '0600'}
+        - {src: initdb.sh.j2, dest: initdb.sh, mode: '0644'}
+        - {src: realm.json.j2, dest: realm.json, mode: '0644'}
+        - {src: nginx.conf.j2, dest: nginx.conf, mode: '0644'}
+    - name: Browser configuration without secrets
+      ansible.builtin.copy:
+        dest: "{{ release_path }}/config.js"
+        mode: '0644'
+        content: 'window.NIXU_CONFIG = {{ {"authMode":"oidc","issuer":"https://" + nixu_domain + "/auth/realms/nixu","clientId":"nixu-web","appUrl":"https://" + nixu_domain} | to_json }};'
+    - name: Obtain trusted certificate (DNS must point to this VPS)
+      ansible.builtin.command:
+        argv: [certbot, certonly, --standalone, --non-interactive, --agree-tos, --email, "{{ nixu_acme_email }}", -d, "{{ nixu_domain }}"]
+        creates: "/etc/letsencrypt/live/{{ nixu_domain }}/fullchain.pem"
+    - name: Check existing release images
+      ansible.builtin.command: "docker image inspect nixu-api:{{ nixu_release }} nixu-web:{{ nixu_release }}"
+      register: existing_images
+      failed_when: false
+      changed_when: false
+    - name: Build and test images once per source digest
+      ansible.builtin.command:
+        argv: [docker, compose, --env-file, secrets.env, build, migrate, web]
+        chdir: "{{ release_path }}"
+      when: existing_images.rc != 0
+      changed_when: true
+    - name: Validate final Compose
+      ansible.builtin.command:
+        argv: [docker, compose, --env-file, secrets.env, config, --quiet]
+        chdir: "{{ release_path }}"
+      changed_when: false
+    - name: Stop previous writers immediately before migrations
+      ansible.builtin.command:
+        argv: [docker, compose, --env-file, secrets.env, stop, api]
+        chdir: "{{ nixu_root }}/current"
+      when: previous.stat.exists and previous.stat.lnk_source != release_path
+      changed_when: true
+    - name: Initialize database and migrate schema
+      ansible.builtin.command:
+        argv: [docker, compose, --env-file, secrets.env, run, --rm, migrate]
+        chdir: "{{ release_path }}"
+      changed_when: true
+    - name: Restart database after migration job
+      ansible.builtin.command:
+        argv: [docker, compose, --env-file, secrets.env, up, -d, postgres]
+        chdir: "{{ release_path }}"
+      changed_when: true
+    - name: Make audit append-only for runtime role
+      ansible.builtin.command:
+        argv: [docker, compose, --env-file, secrets.env, exec, -T, postgres, psql, -U, postgres, -d, nixu, -v, ON_ERROR_STOP=1, -c, "REVOKE UPDATE,DELETE,TRUNCATE ON audit FROM nixu_app;"]
+        chdir: "{{ release_path }}"
+      changed_when: true
+    - name: Start application
+      ansible.builtin.command:
+        argv: [docker, compose, --env-file, secrets.env, up, -d, --no-build, keycloak, web, api]
+        chdir: "{{ release_path }}"
+      changed_when: true
+    - name: Verify HTTPS and backend health
+      ansible.builtin.uri:
+        url: "https://{{ nixu_domain }}/health"
+        validate_certs: true
+        status_code: 200
+      register: health
+      retries: 40
+      delay: 10
+      until: health.status == 200
+    - name: Activate verified release
+      ansible.builtin.file:
+        src: "{{ release_path }}"
+        dest: "{{ nixu_root }}/current"
+        state: link
+    - name: Install backup job
+      ansible.builtin.template:
+        src: backup.sh.j2
+        dest: "{{ nixu_root }}/backup.sh"
+        mode: '0700'
+    - name: Configure optional encrypted external backup
+      ansible.builtin.template:
+        src: restic.env.j2
+        dest: "{{ nixu_root }}/restic.env"
+        mode: '0600'
+      when: nixu_restic_repository | length > 0
+      no_log: true
+    - name: Schedule nightly maintenance snapshot
+      ansible.builtin.cron:
+        name: nixu-backup
+        hour: '2'
+        minute: '15'
+        job: "{{ nixu_root }}/backup.sh >> /var/log/nixu-backup.log 2>&1"
+    - name: Certificate reload hook
+      ansible.builtin.copy:
+        dest: /etc/letsencrypt/renewal-hooks/deploy/nixu-reload
+        mode: '0755'
+        content: |
+          #!/bin/sh
+          set -eu
+          cd {{ nixu_root }}/current
+          docker compose --env-file secrets.env exec -T web nginx -s reload
+    - name: Enable certificate renewal timer
+      ansible.builtin.systemd_service:
+        name: certbot.timer
+        state: started
+        enabled: true
+    - name: Report installed portal
+      ansible.builtin.debug:
+        msg: "wax: https://{{ nixu_domain }} ; login admin, temporary password from Vault; change password and configure OTP on first login."

@@ -1,11 +1,15 @@
-# nixu — Инфраструктура разработки
+# wax — Инфраструктура разработки
+
+**Домен портала:** [wax.su](https://wax.su)
+
+**WAX — Workflows. Automation. eXecution.**
+
+*Процессы. Автоматизация. Исполнение.*
 
 <p align="left">
-  <img src="assets/branding/nixu-logo.jpg" alt="Логотип nixu" width="320">
+  <img src="assets/branding/wax-logo.png" alt="Логотип wax" width="320">
 </p>
 
-**Every Process. One System.**  
-*Каждый процесс. Единая система.*
 
 **Документ:** INFRA.md  
 **Версия:** 0.1  
@@ -281,17 +285,18 @@ Frontend получает публичный runtime-config: URL API, OIDC issue
 
 ### Имена
 
-Это шаблоны, а не существующие DNS-настройки:
+Домен портала пилота — `wax.su`; его DNS-запись A должна указывать на VPS. Остальные имена ниже — шаблоны для отдельных сред и сервисов:
 
 | Имя | Назначение |
 |---|---|
+| wax.su | Портал пилота; API под /api, Keycloak под /auth |
 | nixu-stg.example.com | Web и API staging |
 | auth-stg.example.com | Keycloak staging |
 | nexus.example.com | Внутренний Nexus |
 | registry.example.com | Внутренний OCI registry |
 | grafana.example.com | Эксплуатационные панели |
 
-Реальные домен и IP фиксируются в inventory. Название nixu не означает, что одноимённый домен уже зарегистрирован.
+В Ansible задано `nixu_domain: wax.su`; фактический IP VPS указывается в inventory. Настройка DNS и получение TLS-сертификата выполняются при развёртывании.
 
 ### Разрешённые соединения
 
@@ -447,7 +452,7 @@ Issues — требования и дефекты; Projects — план; Markdo
 | Maven proxy/group | Central и разрешённые внешние источники |
 | Maven hosted | Собственные release-артефакты |
 | npm proxy/group | npm-зависимости |
-| Docker/OCI hosted | Проверенные nixu и инфраструктурные образы |
+| Docker/OCI hosted | Проверенные wax и инфраструктурные образы |
 | Docker proxy | Ускорение загрузок; не единственная копия release |
 | Raw hosted | Manifests, SBOM, source bundles и инструменты |
 
@@ -580,7 +585,7 @@ erp/
 ├── NFR.md
 ├── STACK.md
 ├── INFRA.md
-├── assets/branding/nixu-logo.jpg
+├── assets/branding/wax-logo.png
 ├── pom.xml
 ├── mvnw
 ├── mvnw.cmd

@@ -1,0 +1,10 @@
+**/node_modules
+**/target
+**/dist
+**/data
+**/*.log
+.git
+dist
+**/secrets.yml
+**/secrets.env
+employees.csv

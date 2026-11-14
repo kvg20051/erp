@@ -1,0 +1,1 @@
+window.NIXU_CONFIG = { authMode: "demo" };

@@ -22,3 +22,20 @@
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
 replay_pid*
+
+# Prototype runtime and secrets
+**/node_modules/
+**/target/
+**/dist/
+**/data/
+*.log
+*.tsbuildinfo
+.env
+**/secrets.yml
+**/secrets.env
+**/inventory.ini
+**/playwright-report/
+**/test-results/
+**/__pycache__/
+apps/web/npm-audit.json
+release/

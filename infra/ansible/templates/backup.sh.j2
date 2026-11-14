@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Consistent maintenance snapshot; writers stop briefly. This is not WAL/PITR.
+set -euo pipefail
+umask 077
+cd {{ nixu_root }}/current
+exec 9>/run/nixu-backup.lock
+flock -n 9 || exit 0
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+dest="{{ nixu_backup_path }}/$stamp"
+mkdir -p "$dest"
+compose=(docker compose --env-file secrets.env)
+trap '"${compose[@]}" start api keycloak >/dev/null' EXIT
+"${compose[@]}" stop -t 40 api keycloak
+"${compose[@]}" exec -T postgres pg_dump -U postgres -Fc nixu > "$dest/nixu.dump"
+"${compose[@]}" exec -T postgres pg_dump -U postgres -Fc keycloak > "$dest/keycloak.dump"
+"${compose[@]}" run --rm --no-deps --entrypoint tar api -C /data -czf - files > "$dest/files.tar.gz"
+cp compose.yml "$dest/compose.yml"
+printf '%s\n' '{{ nixu_release }}' > "$dest/release.txt"
+sha256sum "$dest/"* > "$dest/SHA256SUMS"
+"${compose[@]}" start api keycloak
+trap - EXIT
+{% if nixu_restic_repository | length > 0 %}
+set -a
+source {{ nixu_root }}/restic.env
+set +a
+restic backup "$dest"
+{% endif %}
+# Retention stays manual until restore and legal retention policy are approved.

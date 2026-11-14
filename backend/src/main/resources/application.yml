@@ -1,0 +1,46 @@
+spring:
+  application:
+    name: wax
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/nixu}
+    username: ${DB_USER:nixu_app}
+    password: ${DB_PASSWORD:}
+    hikari:
+      maximum-pool-size: 12
+  flyway:
+    enabled: ${FLYWAY_ENABLED:false}
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${OIDC_ISSUER:http://localhost:8180/realms/nixu}
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 11MB
+server:
+  port: 8080
+  error:
+    include-message: never
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+nixu:
+  files: ${FILES_PATH:./data/files}
+  demo-password: ${DEMO_PASSWORD:}
+---
+spring:
+  config:
+    activate:
+      on-profile: demo
+  datasource:
+    url: jdbc:h2:file:./data/demo;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;NON_KEYWORDS=VALUE,MONTH
+    username: sa
+    password: ${DEMO_DB_PASSWORD:}
+  flyway:
+    enabled: true

@@ -1,0 +1,106 @@
+name: nixu
+services:
+  postgres:
+    image: postgres:18-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      OWNER_PASSWORD: ${OWNER_PASSWORD}
+      APP_PASSWORD: ${APP_PASSWORD}
+      KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+    volumes:
+      - postgres:/var/lib/postgresql
+      - ./initdb.sh:/docker-entrypoint-initdb.d/01-nixu.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      retries: 20
+    networks: [internal]
+  migrate:
+    image: nixu-api:${RELEASE}
+    build:
+      context: ./source
+      dockerfile: infra/docker/backend.Dockerfile
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/nixu
+      DB_USER: nixu_owner
+      DB_PASSWORD: ${OWNER_PASSWORD}
+      SPRING_PROFILES_ACTIVE: migrate
+      SPRING_MAIN_WEB_APPLICATION_TYPE: none
+      FLYWAY_ENABLED: "true"
+    depends_on:
+      postgres: {condition: service_healthy}
+    networks: [internal]
+    restart: "no"
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.2
+    command: ["start","--import-realm"]
+    restart: unless-stopped
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      KC_HOSTNAME: https://${DOMAIN}/auth
+      KC_HTTP_RELATIVE_PATH: /auth
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HEALTH_ENABLED: "true"
+      KC_BOOTSTRAP_ADMIN_USERNAME: bootstrap-admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD}
+      NIXU_ADMIN_PASSWORD: ${NIXU_ADMIN_PASSWORD}
+    volumes:
+      - ./realm.json:/opt/keycloak/data/import/nixu-realm.json:ro
+    depends_on:
+      postgres: {condition: service_healthy}
+    networks: [internal, edge]
+  api:
+    image: nixu-api:${RELEASE}
+    restart: unless-stopped
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/nixu
+      DB_USER: nixu_app
+      DB_PASSWORD: ${APP_PASSWORD}
+      OIDC_ISSUER: https://${DOMAIN}/auth/realms/nixu
+      FILES_PATH: /data/files
+      FLYWAY_ENABLED: "false"
+    volumes:
+      - files:/data/files
+    healthcheck:
+      test: ["CMD","curl","--fail","--silent","http://localhost:8080/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      keycloak: {condition: service_started}
+    networks: [internal, edge]
+  web:
+    image: nixu-web:${RELEASE}
+    build:
+      context: ./source
+      dockerfile: infra/docker/web.Dockerfile
+    restart: unless-stopped
+    ports:
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./config.js:/usr/share/nginx/html/config.js:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      keycloak: {condition: service_started}
+    networks:
+      internal: {}
+      edge:
+        aliases:
+          - ${DOMAIN}
+networks:
+  internal:
+    internal: true
+  edge: {}
+volumes:
+  postgres: {name: nixu_postgres}
+  files: {name: nixu_files}

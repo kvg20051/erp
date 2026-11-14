@@ -1,3 +1,16 @@
+# wax ERP · прототип 0.1
+
+**Домен портала:** [wax.su](https://wax.su)
+
+**WAX — Workflows. Automation. eXecution.**
+
+*Процессы. Автоматизация. Исполнение.*
+
+[Запуск и возможности](PROTOTYPE.md) · [Ansible deploy](docs/DEPLOY.md) · [Матрица требований](docs/REQUIREMENTS.md) · [Проверки](docs/VERIFICATION.md) · [Название и совместимость](docs/BRANDING.md)
+
+
+---
+
 # Модули ERP-системы
 
 ## Ядро

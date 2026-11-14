@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres \
+  -v owner_password="$OWNER_PASSWORD" -v app_password="$APP_PASSWORD" -v kc_password="$KEYCLOAK_DB_PASSWORD" <<'SQL'
+CREATE ROLE nixu_owner LOGIN PASSWORD :'owner_password';
+CREATE ROLE nixu_app LOGIN PASSWORD :'app_password';
+CREATE ROLE keycloak LOGIN PASSWORD :'kc_password';
+CREATE DATABASE nixu OWNER nixu_owner;
+CREATE DATABASE keycloak OWNER keycloak;
+REVOKE CONNECT ON DATABASE nixu FROM PUBLIC;
+GRANT CONNECT ON DATABASE nixu TO nixu_owner,nixu_app;
+SQL
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname nixu <<'SQL'
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+GRANT USAGE ON SCHEMA public TO nixu_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE nixu_owner IN SCHEMA public GRANT SELECT,INSERT,UPDATE,DELETE ON TABLES TO nixu_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE nixu_owner IN SCHEMA public GRANT USAGE,SELECT ON SEQUENCES TO nixu_app;
+SQL
